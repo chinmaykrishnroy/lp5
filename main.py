@@ -20,40 +20,38 @@ EXCEL_FILE = "Despegar SPRK users Creation.xlsx"
 PASSWORD = "Despegar@321"
 START_URL = "https://platform.prd.farelogix.com/fpm/PCCs/Details/BV5Q"
 
-# Toggle testing mode
 TESTING = True  # 🔑 Change to False for automatic run
-
 USER_DATA_DIR = None
 PROFILE_DIR = "Default"
 HEADLESS = False
 
+# =========================
 # XPaths / IDs
-XPATH_TAB_TO_CLICK = "//ul/li[2]/a[contains(text(),'Users')]"  # More resilient
-XPATH_ADD_USER_BUTTON = "//button[@type='button' and contains(text(),'Add User')]"
-XPATH_SAVE_BUTTON = "//form//button[1][contains(text(),'Save')]"
+# =========================
+XPATH_TAB_TO_CLICK = "(//a[@ng-click='select($event)'])[2]"  # second tab (AclProd)
+XPATH_ADD_USER_BUTTON = "//button[@ng-click=\"vm.addAclUser(vm.AclAgents,'lg')\"]"
+# XPATH_SAVE_BUTTON = "//button[text()='Save']" 
+XPATH_SAVE_BUTTON = "//button[@type='submit' and contains(@class,'btn-primary')]"
+
 
 ID_AGENT_ID = "acl-user-id"
 ID_NEW_PWD = "acl-user-newpwd"
 ID_CONF_PWD = "acl-user-confnewpwd"
 ID_NAME = "acl-user-name"
 ID_EMAIL = "acl-user-email"
-
 XPATH_ROLE_BASE = "//*[@id='acl-user-roles']/label[{index}]"
 
 WAIT_TIME = 20
 SLEEP_BETWEEN_ROWS = 1.0
 
-
 # =========================
 # HELPERS
 # =========================
 def pause(msg: str = "Press ENTER to continue..."):
-    """Pause if TESTING=True, otherwise just print the message."""
     if TESTING:
         input(f"⏸ {msg}")
     else:
         print(f"➡ {msg}")
-
 
 def make_driver():
     options = Options()
@@ -64,28 +62,26 @@ def make_driver():
     options.add_argument("--no-sandbox")
     if USER_DATA_DIR:
         options.add_argument(f"user-data-dir={USER_DATA_DIR}")
-    options.add_argument(f"profile-directory={PROFILE_DIR}")
-
+        options.add_argument(f"profile-directory={PROFILE_DIR}")
     driver_path = os.path.join(os.getcwd(), "msedgedriver.exe")
     service = EdgeService(executable_path=driver_path)
     return webdriver.Edge(service=service, options=options)
 
-
 def wait_click(driver, by, locator, timeout=WAIT_TIME):
-    """Wait for an element and click it, fallback with JS if normal click fails."""
+    """Wait until clickable, scroll, JS click fallback."""
     wait = WebDriverWait(driver, timeout)
     el = wait.until(EC.element_to_be_clickable((by, locator)))
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+    time.sleep(0.3)
     try:
         el.click()
     except (ElementClickInterceptedException, StaleElementReferenceException):
         driver.execute_script("arguments[0].click();", el)
 
-
 def wait_present(driver, by, locator, timeout=WAIT_TIME):
     return WebDriverWait(driver, timeout).until(
         EC.presence_of_element_located((by, locator))
     )
-
 
 def clear_and_type(driver, by, locator, text):
     el = wait_present(driver, by, locator)
@@ -94,7 +90,6 @@ def clear_and_type(driver, by, locator, text):
     except Exception:
         pass
     el.send_keys(text)
-
 
 def normalize_role(role_text: str) -> str:
     r = (role_text or "").strip().lower()
@@ -108,7 +103,6 @@ def normalize_role(role_text: str) -> str:
     }
     return mapping.get(r, r)
 
-
 def role_to_index(normalized_role: str) -> int:
     order = {
         "sub agent": 1,
@@ -118,7 +112,6 @@ def role_to_index(normalized_role: str) -> int:
         "enterprise admin": 5,
     }
     return order.get(normalized_role, 0)
-
 
 # =========================
 # MAIN
@@ -132,6 +125,7 @@ def main():
         return
 
     driver = make_driver()
+
     try:
         # Step 1: Open login page
         driver.get(START_URL)
@@ -139,10 +133,16 @@ def main():
         pause("After logging in completely, press ENTER to proceed to the Users tab...")
 
         # Step 2: Click Users tab
-        el_tab = wait_present(driver, By.XPATH, XPATH_TAB_TO_CLICK)
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el_tab)
-        wait_click(driver, By.XPATH, XPATH_TAB_TO_CLICK)
-        pause("Users tab clicked. Press ENTER to continue to Add User loop...")
+        try:
+            wait_click(driver, By.XPATH, XPATH_TAB_TO_CLICK)
+            WebDriverWait(driver, WAIT_TIME).until(
+                EC.presence_of_element_located((By.XPATH, XPATH_ADD_USER_BUTTON))
+            )
+            pause("Users tab clicked. Press ENTER to continue to Add User loop...")
+        except TimeoutException:
+            print("❌ Users tab not found or not clickable. Check XPath or page load.")
+            driver.quit()
+            return
 
         # Step 3: Process each row
         for i, row in df.iterrows():
@@ -159,17 +159,12 @@ def main():
             full_name = f"{name} {last_name}"
             normalized_role = normalize_role(role)
             role_index = role_to_index(normalized_role)
-
             if role_index == 0:
                 print(f"Skipping row {i}: Unknown role '{role}'.")
                 continue
 
             try:
                 # Add User button
-                btn = wait_present(driver, By.XPATH, XPATH_ADD_USER_BUTTON)
-                driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", btn
-                )
                 wait_click(driver, By.XPATH, XPATH_ADD_USER_BUTTON)
                 pause(f"Opened Add User modal for row {i}. Press ENTER to fill details...")
 
@@ -181,20 +176,12 @@ def main():
                 clear_and_type(driver, By.ID, ID_NAME, full_name)
                 clear_and_type(driver, By.ID, ID_EMAIL, email)
 
-                # Role selection
+                # Role
                 role_xpath = XPATH_ROLE_BASE.format(index=role_index)
-                role_el = wait_present(driver, By.XPATH, role_xpath)
-                driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", role_el
-                )
                 wait_click(driver, By.XPATH, role_xpath)
                 pause(f"Role '{normalized_role}' selected. Press ENTER to Save...")
 
                 # Save
-                save_el = wait_present(driver, By.XPATH, XPATH_SAVE_BUTTON)
-                driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", save_el
-                )
                 wait_click(driver, By.XPATH, XPATH_SAVE_BUTTON)
 
                 # Wait for modal close
@@ -205,9 +192,7 @@ def main():
                 except TimeoutException:
                     time.sleep(1.0)
 
-                print(
-                    f"✓ Row {i}: Created user '{agent_user}' ({full_name}) as {normalized_role}"
-                )
+                print(f"✓ Row {i}: Created user '{agent_user}' ({full_name}) as {normalized_role}")
                 pause(f"Row {i} done. Press ENTER to continue to next row...")
 
             except TimeoutException as e:
