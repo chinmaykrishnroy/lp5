@@ -147,32 +147,25 @@ def make_working_copy(src_path: str) -> str:
 def setup_logging(working_file: str) -> str:
     p = Path(working_file)
     log_file = p.with_name(p.stem + LOG_SUFFIX)
-    # configure logging to write both to file and stdout
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.FileHandler(log_file, encoding="utf-8", mode="a"),
             logging.StreamHandler(),
         ],
+        force=True,
     )
     logging.info(f"Logging started. Log file: {log_file}")
     return str(log_file)
 
 
 def make_md_table(headers, values) -> str:
-    """Build a small markdown-style table using | and - separators.
-    Example:
-    | A | B |
-    |---|---|
-    | a | b |
-    """
     headers = [str(h) for h in headers]
     values = [str(v) for v in values]
     widths = [max(len(h), len(v)) for h, v in zip(headers, values)]
     header_line = "| " + " | ".join(h.ljust(w) for h, w in zip(headers, widths)) + " |"
     sep_line = "|" + "|".join("-" * (w + 2) for w in widths) + "|"
-    # sep_line uses at least three dashes per column when width small
     row_line = "| " + " | ".join(v.ljust(w) for v, w in zip(values, widths)) + " |"
     return "\n".join([header_line, sep_line, row_line])
 
@@ -185,15 +178,12 @@ def main():
     working_file = make_working_copy(EXCEL_FILE)
     log_file = setup_logging(working_file)
 
-    # read the entire sheet so we can update the correct rows and save back
     df_all = pd.read_excel(working_file)
 
-    # ensure required tracking columns exist
-    for col in ("Status", "DoneAt", "FilledTable"):
+    for col in ("Status", "DoneAt"):
         if col not in df_all.columns:
             df_all[col] = ""
 
-    # filter by Creator == 'Chinmay'
     mask = df_all["Creator"].astype(str).str.strip().str.lower() == "chinmay"
     df_to_process = df_all[mask]
 
@@ -204,12 +194,10 @@ def main():
     driver = make_driver()
 
     try:
-        # Step 1: Open login page
         driver.get(START_URL)
         logging.info("Opened start URL. Please log in manually in the Edge window.")
         pause("After logging in completely, press ENTER to proceed to the Users tab...")
 
-        # Step 2: Click Users tab
         try:
             wait_click(driver, By.XPATH, XPATH_TAB_TO_CLICK)
             WebDriverWait(driver, WAIT_TIME).until(
@@ -221,11 +209,9 @@ def main():
             driver.quit()
             return
 
-        # Step 3: Process each row (iterate original df indices so updates save correctly)
         for idx in df_to_process.index:
             row = df_all.loc[idx]
 
-            # skip if already marked done
             if str(row.get("Status", "")).strip().lower() == "done":
                 logging.info(f"Skipping row {idx}: already marked Done")
                 continue
@@ -254,11 +240,9 @@ def main():
                 continue
 
             try:
-                # Add User button
                 wait_click(driver, By.XPATH, XPATH_ADD_USER_BUTTON)
                 pause(f"Opened Add User modal for row {idx}. Press ENTER to fill details...")
 
-                # Fill details
                 wait_present(driver, By.ID, ID_AGENT_ID)
                 clear_and_type(driver, By.ID, ID_AGENT_ID, agent_user)
                 clear_and_type(driver, By.ID, ID_NEW_PWD, PASSWORD)
@@ -266,21 +250,17 @@ def main():
                 clear_and_type(driver, By.ID, ID_NAME, full_name)
                 clear_and_type(driver, By.ID, ID_EMAIL, email)
 
-                # Role
                 role_xpath = XPATH_ROLE_BASE.format(index=role_index)
                 wait_click(driver, By.XPATH, role_xpath)
                 pause(f"Role '{normalized_role}' selected. Press ENTER to Save...")
 
-                # Build markdown-style table of what we filled
                 headers = ["Agent User", "Full Name", "Email", "Password", "Role"]
                 values = [agent_user, full_name, email, PASSWORD, normalized_role]
                 filled_table = make_md_table(headers, values)
                 logging.info(f"Filled inputs for row {idx}:\n{filled_table}")
 
-                # Save
                 wait_click(driver, By.XPATH, XPATH_SAVE_BUTTON)
 
-                # Wait for modal close (best-effort). If it doesn't close, we'll still mark success
                 try:
                     WebDriverWait(driver, WAIT_TIME).until(
                         EC.invisibility_of_element_located((By.ID, ID_AGENT_ID))
@@ -289,10 +269,8 @@ def main():
                     logging.warning("Modal did not disappear after save within wait time; continuing anyway.")
                     time.sleep(1.0)
 
-                # Mark row done, write filled_table and timestamp, persist to working excel immediately
                 df_all.at[idx, "Status"] = "Done"
                 df_all.at[idx, "DoneAt"] = datetime.now().isoformat()
-                df_all.at[idx, "FilledTable"] = filled_table
                 df_all.to_excel(working_file, index=False)
 
                 logging.info(f"✓ Row {idx}: Created user '{agent_user}' ({full_name}) as {normalized_role}")
