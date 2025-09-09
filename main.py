@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+import re
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -29,8 +30,9 @@ TESTING = False
 USER_DATA_DIR = None
 PROFILE_DIR = "Default"
 HEADLESS = False
+CREATOR = "Rushikesh"   # <- Set to None to process all creators
 
-WORKING_SUFFIX = "_working"  # appended to EXCEL_FILE stem to create working copy
+WORKING_SUFFIX = "_working"  # appended to EXCEL_FILE stem
 LOG_SUFFIX = "_run.log"
 
 # =========================
@@ -55,13 +57,7 @@ SLEEP_BETWEEN_ROWS = 1.0
 # =========================
 
 def pause(msg: str = "Press ENTER to continue..."):
-    if TESTING:
-        input(f"⏸ {msg}")
-    else:
-        print(f"➡ {msg}")
-
-# Force a pause regardless of TESTING
-def pause_always(msg: str = "Press ENTER to continue..."):
+    logging.info(f"⏸ {msg}")
     input(f"⏸ {msg}")
 
 
@@ -81,7 +77,6 @@ def make_driver():
 
 
 def wait_click(driver, by, locator, timeout=WAIT_TIME):
-    """Wait until clickable, scroll, JS click fallback."""
     wait = WebDriverWait(driver, timeout)
     el = wait.until(EC.element_to_be_clickable((by, locator)))
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
@@ -131,10 +126,6 @@ def role_to_index(normalized_role: str) -> int:
     return order.get(normalized_role, 0)
 
 
-# -------------------------
-# New helper: working copy + logging + table builder
-# -------------------------
-
 def make_working_copy(src_path: str) -> str:
     src = Path(src_path)
     if not src.exists():
@@ -175,12 +166,27 @@ def make_md_table(headers, values) -> str:
 
 
 # =========================
+# VALIDATION
+# =========================
+
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+INVALID_USER_CHARS = set(" :;/'\"\\|,<>?*")
+
+def validate_email(email: str) -> bool:
+    return bool(EMAIL_REGEX.match(email.strip()))
+
+
+def validate_username(username: str) -> bool:
+    return not any(ch in INVALID_USER_CHARS for ch in username) and username.strip() != ""
+
+
+# =========================
 # MAIN
 # =========================
 
 def main():
     working_file = make_working_copy(EXCEL_FILE)
-    log_file = setup_logging(working_file)
+    setup_logging(working_file)
 
     df_all = pd.read_excel(working_file)
 
@@ -188,11 +194,15 @@ def main():
         if col not in df_all.columns:
             df_all[col] = ""
 
-    mask = df_all["Creator"].astype(str).str.strip().str.lower() == "chinmay"
-    df_to_process = df_all[mask]
+    # filter by CREATOR if set
+    if CREATOR:
+        mask = df_all["Creator"].astype(str).str.strip().str.lower() == CREATOR.lower()
+        df_to_process = df_all[mask]
+    else:
+        df_to_process = df_all
 
     if df_to_process.empty:
-        logging.info("No rows found where Creator == 'Chinmay'. Nothing to do.")
+        logging.info(f"No rows found for Creator={CREATOR or 'ANY'}. Nothing to do.")
         return
 
     driver = make_driver()
@@ -200,7 +210,7 @@ def main():
     try:
         driver.get(START_URL)
         logging.info("Opened start URL. Please log in manually in the Edge window.")
-        pause_always("After logging in completely, press ENTER to proceed to the Users tab...")
+        pause("After logging in completely, press ENTER to proceed to the Users tab...")
 
         try:
             wait_click(driver, By.XPATH, XPATH_TAB_TO_CLICK)
@@ -210,6 +220,7 @@ def main():
             pause("Users tab clicked. Press ENTER to continue to Add User loop...")
         except TimeoutException:
             logging.error("Users tab not found or not clickable. Check XPath or page load.")
+            pause("⚠ Pausing due to error. Press ENTER to exit...")
             driver.quit()
             return
 
@@ -226,12 +237,28 @@ def main():
             role = str(row.get("Role", "")).strip()
             agent_user = str(row.get("Agent User Name", "")).strip()
 
+            # Validation
+            if not validate_username(agent_user):
+                logging.error(f"Invalid username for row {idx}: '{agent_user}'")
+                df_all.at[idx, "Status"] = "Error - invalid username"
+                df_all.to_excel(working_file, index=False)
+                pause("⚠ Pausing due to invalid username.")
+                continue
+
+            if not validate_email(email):
+                logging.error(f"Invalid email for row {idx}: '{email}'")
+                df_all.at[idx, "Status"] = "Error - invalid email"
+                df_all.to_excel(working_file, index=False)
+                pause("⚠ Pausing due to invalid email.")
+                continue
+
             if not agent_user or not name or not last_name or not email:
-                msg = f"Skipping row {idx}: missing required fields. agent_user='{agent_user}', name='{name}', last_name='{last_name}', email='{email}'"
+                msg = f"Skipping row {idx}: missing required fields"
                 logging.warning(msg)
                 df_all.at[idx, "Status"] = "Skipped - missing fields"
                 df_all.at[idx, "DoneAt"] = datetime.now().isoformat()
                 df_all.to_excel(working_file, index=False)
+                pause("⚠ Pausing due to missing fields.")
                 continue
 
             full_name = f"{name} {last_name}"
@@ -241,6 +268,7 @@ def main():
                 logging.warning(f"Skipping row {idx}: Unknown role '{role}'.")
                 df_all.at[idx, "Status"] = f"Skipped - unknown role: {role}"
                 df_all.to_excel(working_file, index=False)
+                pause("⚠ Pausing due to unknown role.")
                 continue
 
             try:
@@ -271,6 +299,7 @@ def main():
                     )
                 except TimeoutException:
                     logging.warning("Modal did not disappear after save within wait time; continuing anyway.")
+                    pause("⚠ Pausing due to save modal not disappearing.")
                     time.sleep(1.0)
 
                 df_all.at[idx, "Status"] = "Done"
@@ -284,10 +313,12 @@ def main():
                 logging.exception(f"Row {idx}: Timeout while creating '{agent_user}'. Error: {e}")
                 df_all.at[idx, "Status"] = f"Error - Timeout: {e}"
                 df_all.to_excel(working_file, index=False)
+                pause("⚠ Pausing due to timeout error.")
             except Exception as e:
                 logging.exception(f"Row {idx}: Unexpected error for '{agent_user}': {e}")
                 df_all.at[idx, "Status"] = f"Error - {e}"
                 df_all.to_excel(working_file, index=False)
+                pause("⚠ Pausing due to unexpected error.")
 
             time.sleep(SLEEP_BETWEEN_ROWS)
 
