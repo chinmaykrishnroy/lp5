@@ -60,6 +60,10 @@ def pause(msg: str = "Press ENTER to continue..."):
     else:
         print(f"➡ {msg}")
 
+# Force a pause regardless of TESTING
+def pause_always(msg: str = "Press ENTER to continue..."):
+    input(f"⏸ {msg}")
+
 
 def make_driver():
     options = Options()
@@ -196,7 +200,7 @@ def main():
     try:
         driver.get(START_URL)
         logging.info("Opened start URL. Please log in manually in the Edge window.")
-        pause("After logging in completely, press ENTER to proceed to the Users tab...")
+        pause_always("After logging in completely, press ENTER to proceed to the Users tab...")
 
         try:
             wait_click(driver, By.XPATH, XPATH_TAB_TO_CLICK)
