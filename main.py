@@ -25,7 +25,7 @@ EXCEL_FILE = "Despegar SPRK users Creation.xlsx"
 PASSWORD = "Despegar@321"
 START_URL = "https://platform.prd.farelogix.com/fpm/PCCs/Details/BV5Q"
 
-TESTING = True  # 🔑 Change to False for automatic run
+TESTING = False
 USER_DATA_DIR = None
 PROFILE_DIR = "Default"
 HEADLESS = False
@@ -36,7 +36,7 @@ LOG_SUFFIX = "_run.log"
 # =========================
 # XPaths / IDs
 # =========================
-XPATH_TAB_TO_CLICK = "(//a[@ng-click='select($event)'])[2]"  # second tab (AclProd)
+XPATH_TAB_TO_CLICK = "(//a[@ng-click='select($event)'])[2]"
 XPATH_ADD_USER_BUTTON = "//button[@ng-click=\"vm.addAclUser(vm.AclAgents,'lg')\"]"
 XPATH_SAVE_BUTTON = "//button[@type='submit' and contains(@class,'btn-primary')]"
 
